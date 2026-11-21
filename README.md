@@ -1,121 +1,159 @@
-# Dependencies
 
-A Maven **monolith** for shared Spring Boot building blocks and a small, from-scratch pub/sub messaging stack.
+# Lightweight Kafka-Like Messaging System
 
-Java 21 · Spring Boot 4.1.1 · Maven multi-module
+A lightweight, Kafka-inspired messaging system built using **Java 21, Spring Boot, and Maven**. This project includes a custom in-memory message broker, a client library for publishing and subscribing to messages, and a shared Spring Boot starter for reusable dependencies.
 
-This repo is one GitHub repository with three modules that you build together:
+The project is structured as a Maven multi-module repository with three modules:
 
-| Module | Kind | Role |
-| --- | --- | --- |
-| `common-spring-boot-starter` | Shared starter | Opinionated baseline: web, JPA, validation, OpenAPI, Eureka client, Redis sessions, H2 |
-| `custom-messaging` | Client library | Spring Boot auto-config for `Publisher` / `Subscriber` against the broker HTTP API |
-| `custom-messaging-broker` | Runnable service | In-memory topic broker with per-subscriber queues |
+| Module | Description |
+|---|---|
+| `common-spring-boot-starter` | A shared Spring Boot starter containing commonly used dependencies such as Web, JPA, Validation, OpenAPI, Eureka Client, Redis Sessions, and H2. |
+| `custom-messaging` | A client library that provides `Publisher` and `Subscriber` components with Spring Boot auto-configuration. |
+| `custom-messaging-broker` | A standalone messaging broker that manages topics, subscribers, and messages using in-memory queues. |
 
-The broker is a teaching-scale Kafka-style *shape*: create a topic, register subscribers, publish a payload, each subscriber gets its own copy. It is **not** a production message bus (no persistence, no auth, no clustering).
+The messaging system follows the basic Kafka-style publish-subscribe approach. Messages published to a topic are delivered independently to all subscribers registered to that topic.
+
+**Tech Stack:** Java 21 · Spring Boot 4.1.1 · Maven · REST API · ConcurrentHashMap · LinkedBlockingQueue
 
 ---
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────┐
-│  Your Spring Boot app   │
-│  (depends on            │
-│   custom-messaging)     │
+│    Spring Boot App      │
 │                         │
-│  Publisher ─────────┐   │
-│  Subscriber ────────┤   │
-└─────────────────────┼───┘
-                      │ HTTP
-                      ▼
-        ┌─────────────────────────────┐
-        │ custom-messaging-broker     │
-        │ :9090                       │
-        │                             │
-        │  Topic → Map of subscriber  │
-        │          BlockingQueues     │
-        └─────────────────────────────┘
+│  Publisher              │
+│  Subscriber             │
+│                         │
+│  custom-messaging       │
+└────────────┬────────────┘
+             │
+             │ HTTP
+             ▼
+┌─────────────────────────────┐
+│   custom-messaging-broker   │
+│                             │
+│   Topic Management          │
+│   Subscriber Registration  │
+│   Message Distribution     │
+│                             │
+│   LinkedBlockingQueue      │
+└─────────────────────────────┘
 ```
 
-- **Fan-out:** `Topic.publish` copies the same `Message` onto every subscriber queue.
-- **Long poll:** `GET .../messages` blocks on `queue.take()` until a message arrives.
-- **Client consume loop:** `Subscriber` registers, then polls in a background thread and invokes your `Consumer<Message>`.
+### How It Works
+
+- **Topic Management:** Topics are created dynamically to organize messages.
+- **Subscriber Registration:** Each subscriber gets its own message queue.
+- **Message Publishing:** When a message is published, the broker distributes a copy to every registered subscriber.
+- **Message Consumption:** Subscribers retrieve messages through a blocking HTTP endpoint.
+- **Background Consumption:** The client library continuously polls for messages and passes them to the registered consumer.
 
 ---
 
-## Repository layout
+## Project Structure
 
-```
+```text
 .
-├── pom.xml                          # aggregator parent
+├── pom.xml
 ├── common-spring-boot-starter/
 ├── custom-messaging/
-│   └── AutoConfig + Publisher/Subscriber
+│   └── Publisher, Subscriber & Auto-Configuration
 └── custom-messaging-broker/
-    └── REST API + in-memory MessageBroker
-```
-
-Build everything from the repo root (Maven 3.9+ on your `PATH`, or a module `mvnw` / `mvnw.cmd`):
-
-```bash
-mvn clean verify
-```
-
-Windows, from a module that still has the wrapper:
-
-```powershell
-.\custom-messaging-broker\mvnw.cmd -f ..\pom.xml clean verify
+    └── REST API & In-Memory Message Broker
 ```
 
 ---
 
 ## Prerequisites
 
-- JDK **21**
-- Maven **3.9+** (or a module `mvnw` / `mvnw.cmd`)
-- No extra infrastructure for the broker (queues live in process memory)
+- JDK 21
+- Maven 3.9+
+- IDE such as IntelliJ IDEA or Eclipse (optional)
+
+No external messaging infrastructure is required to run the broker.
+
+## Build the Project
+
+Clone the repository:
+
+```bash
+git clone https://github.com/ChaurasiaAdarsh/Lightweight-Kafka-like-messaging.git
+```
+
+Navigate to the project directory and build all modules:
+
+```bash
+mvn clean verify
+```
 
 ---
 
-## Run the broker
+## Running the Message Broker
+
+Start the broker using:
 
 ```bash
 mvn -pl custom-messaging-broker spring-boot:run
 ```
 
-Default port: **9090** (`custom-messaging-broker/src/main/resources/application.properties`).
+The broker runs on port **9090** by default.
 
-### HTTP API
+### Available REST API Endpoints
 
-| Method | Path | Behavior |
-| --- | --- | --- |
-| `POST` | `/topics/{topicName}` | Create topic (idempotent `putIfAbsent`) |
-| `POST` | `/topics/{topicName}/messages` | Publish `{ "payload": ... }` to all subscribers |
-| `POST` | `/topics/{topicName}/subscribers/{subscriberId}` | Register a subscriber queue |
-| `GET`  | `/topics/{topicName}/subscribers/{subscriberId}/messages` | **Blocking** take of the next message |
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/topics/{topicName}` | Create a topic. |
+| POST | `/topics/{topicName}/messages` | Publish a message to a topic. |
+| POST | `/topics/{topicName}/subscribers/{subscriberId}` | Register a subscriber. |
+| GET | `/topics/{topicName}/subscribers/{subscriberId}/messages` | Retrieve the next message from the subscriber's queue. |
 
-Quick smoke test (create → subscribe → publish → consume):
+### Testing the Messaging Flow
+
+The following requests demonstrate the complete publish-subscribe flow.
+
+**1. Create a topic**
 
 ```bash
 curl -X POST http://localhost:9090/topics/orders
+```
 
+**2. Register a subscriber**
+
+```bash
 curl -X POST http://localhost:9090/topics/orders/subscribers/inventory-service
+```
 
-curl -X POST http://localhost:9090/topics/orders/messages ^
-  -H "Content-Type: application/json" ^
-  -d "{\"payload\":{\"orderId\":42}}"
+**3. Publish a message**
 
+```bash
+curl -X POST http://localhost:9090/topics/orders/messages \
+-H "Content-Type: application/json" \
+-d "{\"payload\":{\"orderId\":42}}"
+```
+
+**4. Consume the message**
+
+```bash
 curl http://localhost:9090/topics/orders/subscribers/inventory-service/messages
 ```
 
-On bash, drop the `^` line continuations.
+The subscriber receives the published message from its dedicated queue.
 
 ---
 
-## Use the client library
+## Using the Client Library
 
-Add the module after `mvn -pl custom-messaging install`:
+The `custom-messaging` module provides an easy way to integrate the messaging system into other Spring Boot applications.
+
+First, install the client library into your local Maven repository:
+
+```bash
+mvn -pl custom-messaging install
+```
+
+Add the following dependency to your Spring Boot application's `pom.xml`:
 
 ```xml
 <dependency>
@@ -125,73 +163,96 @@ Add the module after `mvn -pl custom-messaging install`:
 </dependency>
 ```
 
-Auto-config registers `Publisher` and `Subscriber` beans. Point them at the broker:
+Configure the broker URL in `application.properties`:
 
 ```properties
 custom.messaging.broker-url=http://localhost:9090
 ```
 
+### Publishing Messages
+
+Inject the `Publisher` bean and publish messages to a topic:
+
 ```java
 publisher.publish("orders", Map.of("orderId", 42));
+```
 
+### Subscribing to Messages
+
+Use the `Subscriber` bean to register a subscriber and process incoming messages:
+
+```java
 subscriber.subscribe("orders", "inventory-service", message -> {
-    // handle message.payload()
+    System.out.println(message.payload());
 });
 ```
 
-Spring Boot 3+ auto-configuration is declared in:
+The library automatically configures the `Publisher` and `Subscriber` beans through Spring Boot auto-configuration.
 
-`custom-messaging/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
+Auto-configuration is registered in:
 
----
-
-## Shared starter
-
-`common-spring-boot-starter` packages the stack you want every service to inherit (web, JPA, validation, springdoc OpenAPI, Eureka client, Redis sessions, H2). Consume it the same way as any other starter after installing it to your local Maven repo.
-
-Do not treat it as a finished microservice: it currently ships a default `@SpringBootApplication` class so the module can boot for local experiments.
+```text
+custom-messaging/src/main/resources/META-INF/spring/
+org.springframework.boot.autoconfigure.AutoConfiguration.imports
+```
 
 ---
 
-## Security (keep secrets out of Git)
+## Common Spring Boot Starter
 
-This project is public-ready **only if** local secrets never land in the repo.
+The `common-spring-boot-starter` module contains commonly used Spring Boot dependencies that can be shared across multiple applications.
 
-Already ignored at the monolith root:
+It currently includes:
 
-- `.env`, `.env.*` (except `.env.example`)
-- `*.pem`, `*.p12`, `*.jks`, keystores, SSH keys
-- `application-local.properties`, `application-secret.properties`
-- `credentials.json`, `secrets.json`
-- `target/`, `.idea/`, IDE metadata
+- Spring Web
+- Spring Data JPA
+- Validation
+- Springdoc OpenAPI
+- Eureka Client
+- Redis Sessions
+- H2 Database
 
-Rules:
-
-1. Copy `.env.example` → `.env` and keep `.env` on disk only.
-2. Prefer environment variables or a secret manager over hardcoded passwords.
-3. The broker has **no authentication**. Bind it to localhost for demos. Do not expose `:9090` on the public internet.
-4. `GET .../messages` holds the HTTP thread until a message arrives. That is fine for a lab; it is a denial-of-service risk if left open.
-
-If you ever committed a secret, rotate it. Git history still contains it even after you delete the file.
+Install the module into your local Maven repository and add it as a dependency wherever these shared configurations and dependencies are required.
 
 ---
 
-## Design notes
+## Design Decisions
 
-**Why HTTP instead of a binary protocol?**  
-The client (`RestClient`) and broker stay easy to debug with curl. The blocking GET is a simple stand-in for a consumer group fetch.
+**1. Why HTTP for communication?**
 
-**Why per-subscriber `LinkedBlockingQueue`?**  
-Each subscriber must see every published message (pub/sub), not compete for one shared queue (work queue).
+I used HTTP REST APIs to keep communication between the client library and broker simple and easy to test using tools like cURL.
 
-**Concurrency.**  
-Topics live in a `ConcurrentHashMap`. Publish walks subscriber queues and `put`s. Consumers `take`. That is enough for a single-process broker.
+**2. Why LinkedBlockingQueue?**
 
-**What this is not.**  
-No disk log, no acknowledgements, no retries with backoff, no TLS, no multi-instance consensus. Use Kafka, RabbitMQ, or Pulsar when those matter.
+Each subscriber needs to receive its own copy of every published message. Using a separate `LinkedBlockingQueue` for each subscriber makes this possible without subscribers competing for messages.
+
+**3. Why ConcurrentHashMap?**
+
+Topics and their associated subscribers are maintained using `ConcurrentHashMap`, allowing concurrent access during message publishing and subscription operations.
+
+**4. How is message consumption handled?**
+
+The broker uses a blocking queue operation (`take()`) to wait until a message becomes available. The client library handles message consumption through a background thread.
+
+---
+
+## Current Limitations
+
+This is a lightweight implementation intended for understanding and experimenting with messaging concepts. It is not a production-ready replacement for Apache Kafka.
+
+Current limitations include:
+
+- Messages are stored in memory and are lost when the broker restarts.
+- No message persistence or acknowledgements.
+- No retry mechanism or dead-letter queues.
+- No authentication or authorization.
+- No clustering or distributed broker support.
+- Blocking HTTP requests are used for message consumption.
+
+For production-grade messaging systems, technologies such as Apache Kafka, RabbitMQ, or Apache Pulsar are more suitable.
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
